@@ -7,6 +7,7 @@ import Logging
 
 public actor HTTPClientTransport: Actor, Transport {
     public let endpoint: URL
+    public let additionalHeaders: [String: String]
     private let session: URLSession
     public private(set) var sessionID: String?
     private let streaming: Bool
@@ -22,12 +23,14 @@ public actor HTTPClientTransport: Actor, Transport {
         endpoint: URL,
         configuration: URLSessionConfiguration = .default,
         streaming: Bool = false,
+        additionalHeaders: [String : String] = [:],
         logger: Logger? = nil
     ) {
         self.init(
             endpoint: endpoint,
             session: URLSession(configuration: configuration),
             streaming: streaming,
+            additionalHeaders: additionalHeaders,
             logger: logger
         )
     }
@@ -36,11 +39,13 @@ public actor HTTPClientTransport: Actor, Transport {
         endpoint: URL,
         session: URLSession,
         streaming: Bool = false,
+        additionalHeaders: [String : String] = [:],
         logger: Logger? = nil
     ) {
         self.endpoint = endpoint
         self.session = session
         self.streaming = streaming
+        self.additionalHeaders = additionalHeaders
 
         // Create message stream
         var continuation: AsyncThrowingStream<Data, Swift.Error>.Continuation!
@@ -94,6 +99,12 @@ public actor HTTPClientTransport: Actor, Transport {
 
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
+        
+        // Add any additional headers
+        for (key, value) in additionalHeaders {
+            request.addValue(value, forHTTPHeaderField: key)
+        }
+        
         request.addValue("application/json, text/event-stream", forHTTPHeaderField: "Accept")
         request.addValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = data
@@ -182,6 +193,12 @@ public actor HTTPClientTransport: Actor, Transport {
 
             var request = URLRequest(url: endpoint)
             request.httpMethod = "GET"
+            
+            // Add any additional headers
+            for (key, value) in additionalHeaders {
+                request.addValue(value, forHTTPHeaderField: key)
+            }
+            
             request.addValue("text/event-stream", forHTTPHeaderField: "Accept")
 
             // Add session ID if available
