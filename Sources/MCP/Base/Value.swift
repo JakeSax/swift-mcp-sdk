@@ -27,7 +27,7 @@ public enum Value: Hashable, Sendable {
 
     /// Returns whether the value is `null`.
     public var isNull: Bool {
-        return self == .null
+        self == .null
     }
 
     /// Returns the `Bool` value if the value is a `bool`,
@@ -116,22 +116,15 @@ extension Value: Codable {
         var container = encoder.singleValueContainer()
 
         switch self {
-        case .null:
-            try container.encodeNil()
-        case .bool(let value):
-            try container.encode(value)
-        case .int(let value):
-            try container.encode(value)
-        case .double(let value):
-            try container.encode(value)
-        case .string(let value):
-            try container.encode(value)
+        case .null: try container.encodeNil()
+        case .bool(let value): try container.encode(value)
+        case .int(let value): try container.encode(value)
+        case .double(let value): try container.encode(value)
+        case .string(let value): try container.encode(value)
         case let .data(mimeType, value):
             try container.encode(value.dataURLEncoded(mimeType: mimeType))
-        case .array(let value):
-            try container.encode(value)
-        case .object(let value):
-            try container.encode(value)
+        case .array(let value): try container.encode(value)
+        case .object(let value): try container.encode(value)
         }
     }
 }
@@ -139,22 +132,14 @@ extension Value: Codable {
 extension Value: CustomStringConvertible {
     public var description: String {
         switch self {
-        case .null:
-            return ""
-        case .bool(let value):
-            return value.description
-        case .int(let value):
-            return value.description
-        case .double(let value):
-            return value.description
-        case .string(let value):
-            return value.description
-        case let .data(mimeType, value):
-            return value.dataURLEncoded(mimeType: mimeType)
-        case .array(let value):
-            return value.description
-        case .object(let value):
-            return value.description
+        case .null: ""
+        case .bool(let value): value.description
+        case .int(let value): value.description
+        case .double(let value): value.description
+        case .string(let value): value.description
+        case let .data(mimeType, value): value.dataURLEncoded(mimeType: mimeType)
+        case .array(let value): value.description
+        case .object(let value): value.description
         }
     }
 }
@@ -387,16 +372,11 @@ extension String {
     ///   ```
     public init?(_ value: Value, strict: Bool = true) {
         switch value {
-        case .string(let s):
-            self = s
-        case .int(let i) where !strict:
-            self = String(i)
-        case .double(let d) where !strict:
-            self = String(d)
-        case .bool(let b) where !strict:
-            self = String(b)
-        default:
-            return nil
+        case .string(let s): self = s
+        case .int(let i) where !strict: self = String(i)
+        case .double(let d) where !strict: self = String(d)
+        case .bool(let b) where !strict: self = String(b)
+        default: return nil
         }
     }
 }

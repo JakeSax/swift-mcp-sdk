@@ -184,6 +184,19 @@ public enum ResourceSubscribe: Method {
     public typealias Result = Empty
 }
 
+/// Clients can unsubscribe from specific resources to stop receiving notifications when they change.
+/// - SeeAlso: https://spec.modelcontextprotocol.io/specification/2024-11-05/server/resources/#subscriptions
+public enum ResourceUnsubscribe: Method {
+    public static let name: String = "resources/unsubscribe"
+    
+    public struct Parameters: Hashable, Codable, Sendable {
+        public let uri: String
+    }
+    
+    public typealias Result = Empty
+}
+
+
 /// When a resource changes, servers that declared the updated capability SHOULD send a notification to subscribed clients.
 /// - SeeAlso: https://spec.modelcontextprotocol.io/specification/2024-11-05/server/resources/#subscriptions
 public struct ResourceUpdatedNotification: Notification {

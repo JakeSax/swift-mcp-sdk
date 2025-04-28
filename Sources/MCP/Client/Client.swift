@@ -7,85 +7,12 @@ import class Foundation.JSONEncoder
 
 /// Model Context Protocol client
 public actor Client {
-    /// The client configuration
-    public struct Configuration: Hashable, Codable, Sendable {
-        /// The default configuration.
-        public static let `default` = Configuration(strict: false)
 
-        /// The strict configuration.
-        public static let strict = Configuration(strict: true)
-
-        /// When strict mode is enabled, the client:
-        /// - Requires server capabilities to be initialized before making requests
-        /// - Rejects all requests that require capabilities before initialization
-        ///
-        /// While the MCP specification requires servers to respond to initialize requests
-        /// with their capabilities, some implementations may not follow this.
-        /// Disabling strict mode allows the client to be more lenient with non-compliant
-        /// servers, though this may lead to undefined behavior.
-        public var strict: Bool
-
-        public init(strict: Bool = false) {
-            self.strict = strict
-        }
-    }
-
-    /// Implementation information
-    public struct Info: Hashable, Codable, Sendable {
-        /// The client name
-        public var name: String
-        /// The client version
-        public var version: String
-
-        public init(name: String, version: String) {
-            self.name = name
-            self.version = version
-        }
-    }
-
-    /// The client capabilities
-    public struct Capabilities: Hashable, Codable, Sendable {
-        /// The roots capabilities
-        public struct Roots: Hashable, Codable, Sendable {
-            /// Whether the list of roots has changed
-            public var listChanged: Bool?
-
-            public init(listChanged: Bool? = nil) {
-                self.listChanged = listChanged
-            }
-        }
-
-        /// The sampling capabilities
-        public struct Sampling: Hashable, Codable, Sendable {
-            public init() {}
-        }
-
-        /// Whether the client supports sampling
-        public var sampling: Sampling?
-        /// Experimental features supported by the client
-        public var experimental: [String: String]?
-        /// Whether the client supports roots
-        public var roots: Capabilities.Roots?
-
-        public init(
-            sampling: Sampling? = nil,
-            experimental: [String: String]? = nil,
-            roots: Capabilities.Roots? = nil
-        ) {
-            self.sampling = sampling
-            self.experimental = experimental
-            self.roots = roots
-        }
-    }
-
+    // MARK: Properties
     /// The connection to the server
     private var connection: (any Transport)?
     /// The logger for the client
-    private var logger: Logger? {
-        get async {
-            await connection?.logger
-        }
-    }
+    private nonisolated let logger: Logger
 
     /// The client information
     private let clientInfo: Client.Info
@@ -119,65 +46,36 @@ public actor Client {
         let continuation: CheckedContinuation<T, Swift.Error>
     }
 
-    /// A type-erased pending request
-    private struct AnyPendingRequest {
-        private let _resume: (Result<Any, Swift.Error>) -> Void
-
-        init<T: Sendable & Decodable>(_ request: PendingRequest<T>) {
-            _resume = { result in
-                switch result {
-                case .success(let value):
-                    if let typedValue = value as? T {
-                        request.continuation.resume(returning: typedValue)
-                    } else if let value = value as? Value,
-                        let data = try? JSONEncoder().encode(value),
-                        let decoded = try? JSONDecoder().decode(T.self, from: data)
-                    {
-                        request.continuation.resume(returning: decoded)
-                    } else {
-                        request.continuation.resume(throwing: TypeMismatchError())
-                    }
-                case .failure(let error):
-                    request.continuation.resume(throwing: error)
-                }
-            }
-        }
-        func resume(returning value: Any) {
-            _resume(.success(value))
-        }
-
-        func resume(throwing error: Swift.Error) {
-            _resume(.failure(error))
-        }
-    }
-
     /// A dictionary of type-erased pending requests, keyed by request ID
     private var pendingRequests: [ID: AnyPendingRequest] = [:]
     // Add reusable JSON encoder/decoder
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
 
+    // MARK: Initialization
     public init(
         name: String,
         version: String,
-        configuration: Configuration = .default
+        configuration: Configuration = .default,
+        logger: Logger? = nil
     ) {
         self.clientInfo = Client.Info(name: name, version: version)
         self.capabilities = Capabilities()
         self.configuration = configuration
+        self.logger = logger ?? Logger(label: "mcp.client")
     }
-
+    
+    // MARK: Methods
     /// Connect to the server using the given transport
     public func connect(transport: any Transport) async throws {
         self.connection = transport
         try await self.connection?.connect()
 
-        await logger?.info(
-            "Client connected", metadata: ["name": "\(name)", "version": "\(version)"])
+        logger.info("Client connected", metadata: ["name": "\(name)", "version": "\(version)"])
 
         // Start message handling loop
         task = Task {
-            guard let connection = self.connection else { return }
+            guard let connection else { return }
             repeat {
                 // Check for cancellation before starting the iteration
                 if Task.isCancelled { break }
@@ -202,7 +100,7 @@ public actor Client {
                             if let string = String(data: data, encoding: .utf8) {
                                 metadata["message"] = .string(string)
                             }
-                            await logger?.warning(
+                            logger.warning(
                                 "Unexpected message received by client (not single/batch response or notification)",
                                 metadata: metadata
                             )
@@ -212,8 +110,7 @@ public actor Client {
                     try? await Task.sleep(for: .milliseconds(10))
                     continue
                 } catch {
-                    await logger?.error(
-                        "Error in message handling loop", metadata: ["error": "\(error)"])
+                    logger.error("Error in message handling loop", metadata: ["error": "\(error)"])
                     break
                 }
             } while true
@@ -230,10 +127,18 @@ public actor Client {
 
         task?.cancel()
         task = nil
-        if let connection = connection {
+        if let connection {
             await connection.disconnect()
         }
         connection = nil
+    }
+    
+    public func reconnect(usingTransport transport: (any Transport)? = nil) async throws {
+        guard let transport = transport ?? connection else {
+            logger.error("Cannot reconnect, no available transport")
+            throw MCPError.internalError("Cannot reconnect, no available transport")
+        }
+        try await self.connect(transport: transport)
     }
 
     // MARK: - Registration
@@ -251,7 +156,7 @@ public actor Client {
 
     /// Send a notification to the server
     public func notify<N: Notification>(_ notification: Message<N>) async throws {
-        guard let connection = connection else {
+        guard let connection else {
             throw MCPError.internalError("Client connection not initialized")
         }
 
@@ -263,7 +168,7 @@ public actor Client {
 
     /// Send a request and receive its response
     public func send<M: Method>(_ request: Request<M>) async throws -> M.Result {
-        guard let connection = connection else {
+        guard let connection else {
             throw MCPError.internalError("Client connection not initialized")
         }
 
@@ -419,7 +324,7 @@ public actor Client {
     /// - Throws: `MCPError.internalError` if the client is not connected.
     ///           Can also rethrow errors from the `body` closure or from sending the batch request.
     public func withBatch(body: @escaping (Batch) async throws -> Void) async throws {
-        guard let connection = connection else {
+        guard let connection else {
             throw MCPError.internalError("Client connection not initialized")
         }
 
@@ -434,11 +339,11 @@ public actor Client {
 
         // Check if there are any requests to send
         guard !requests.isEmpty else {
-            await logger?.info("Batch requested but no requests were added.")
+            logger.info("Batch requested but no requests were added.")
             return  // Nothing to send
         }
 
-        await logger?.debug(
+        logger.debug(
             "Sending batch request", metadata: ["count": "\(requests.count)"])
 
         // Encode the array of AnyMethod requests into a single JSON payload
@@ -476,18 +381,17 @@ public actor Client {
 
     // MARK: - Prompts
 
-    public func getPrompt(name: String, arguments: [String: Value]? = nil) async throws
-        -> (description: String?, messages: [Prompt.Message])
-    {
+    public func getPrompt(
+        name: String,
+        arguments: [String: Value]? = nil
+    ) async throws -> GetPrompt.Result {
         try validateServerCapability(\.prompts, "Prompts")
         let request = GetPrompt.request(.init(name: name, arguments: arguments))
         let result = try await send(request)
-        return (description: result.description, messages: result.messages)
+        return .init(description: result.description, messages: result.messages)
     }
 
-    public func listPrompts(cursor: String? = nil) async throws
-        -> (prompts: [Prompt], nextCursor: String?)
-    {
+    public func listPrompts(cursor: String? = nil) async throws -> ListPrompts.Result {
         try validateServerCapability(\.prompts, "Prompts")
         let request: Request<ListPrompts>
         if let cursor = cursor {
@@ -496,7 +400,7 @@ public actor Client {
             request = ListPrompts.request(.init())
         }
         let result = try await send(request)
-        return (prompts: result.prompts, nextCursor: result.nextCursor)
+        return .init(prompts: result.prompts, nextCursor: result.nextCursor)
     }
 
     // MARK: - Resources
@@ -508,9 +412,7 @@ public actor Client {
         return result.contents
     }
 
-    public func listResources(cursor: String? = nil) async throws -> (
-        resources: [Resource], nextCursor: String?
-    ) {
+    public func listResources(cursor: String? = nil) async throws -> ListResources.Result {
         try validateServerCapability(\.resources, "Resources")
         let request: Request<ListResources>
         if let cursor = cursor {
@@ -519,20 +421,24 @@ public actor Client {
             request = ListResources.request(.init())
         }
         let result = try await send(request)
-        return (resources: result.resources, nextCursor: result.nextCursor)
+        return .init(resources: result.resources, nextCursor: result.nextCursor)
     }
 
-    public func subscribeToResource(uri: String) async throws {
+    public func subscribeToResource(at uri: String) async throws {
         try validateServerCapability(\.resources?.subscribe, "Resource subscription")
         let request = ResourceSubscribe.request(.init(uri: uri))
+        _ = try await send(request)
+    }
+    
+    public func unsubscribeFromResource(at uri: String) async throws {
+        try validateServerCapability(\.resources?.subscribe, "Resource subscription")
+        let request = ResourceUnsubscribe.request(.init(uri: uri))
         _ = try await send(request)
     }
 
     // MARK: - Tools
 
-    public func listTools(cursor: String? = nil) async throws -> (
-        tools: [Tool], nextCursor: String?
-    ) {
+    public func listTools(cursor: String? = nil) async throws -> ListTools.Result {
         try validateServerCapability(\.tools, "Tools")
         let request: Request<ListTools>
         if let cursor = cursor {
@@ -541,16 +447,17 @@ public actor Client {
             request = ListTools.request(.init())
         }
         let result = try await send(request)
-        return (tools: result.tools, nextCursor: result.nextCursor)
+        return .init(tools: result.tools, nextCursor: result.nextCursor)
     }
 
-    public func callTool(name: String, arguments: [String: Value]? = nil) async throws -> (
-        content: [Tool.Content], isError: Bool?
-    ) {
+    public func callTool(
+        name: String,
+        arguments: [String: Value]? = nil
+    ) async throws -> CallTool.Result {
         try validateServerCapability(\.tools, "Tools")
         let request = CallTool.request(.init(name: name, arguments: arguments))
         let result = try await send(request)
-        return (content: result.content, isError: result.isError)
+        return .init(content: result.content, isError: result.isError)
     }
 
     // MARK: -
@@ -558,7 +465,7 @@ public actor Client {
     private func handleResponse(_ response: Response<AnyMethod>, for request: AnyPendingRequest)
         async
     {
-        await logger?.debug(
+        logger.debug(
             "Processing response",
             metadata: ["id": "\(response.id)"])
 
@@ -573,7 +480,7 @@ public actor Client {
     }
 
     private func handleMessage(_ message: Message<AnyNotification>) async {
-        await logger?.debug(
+        logger.debug(
             "Processing notification",
             metadata: ["method": "\(message.method)"])
 
@@ -585,7 +492,7 @@ public actor Client {
             do {
                 try await handler(message)
             } catch {
-                await logger?.error(
+                logger.error(
                     "Error handling notification",
                     metadata: [
                         "method": "\(message.method)",
@@ -602,14 +509,12 @@ public actor Client {
     private func validateServerCapability<T>(
         _ keyPath: KeyPath<Server.Capabilities, T?>,
         _ name: String
-    )
-        throws
-    {
+    ) throws {
         if configuration.strict {
-            guard let capabilities = serverCapabilities else {
+            guard let serverCapabilities else {
                 throw MCPError.methodNotFound("Server capabilities not initialized")
             }
-            guard capabilities[keyPath: keyPath] != nil else {
+            guard serverCapabilities[keyPath: keyPath] != nil else {
                 throw MCPError.methodNotFound("\(name) is not supported by the server")
             }
         }
@@ -617,7 +522,7 @@ public actor Client {
 
     // Add handler for batch responses
     private func handleBatchResponse(_ responses: [AnyResponse]) async {
-        await logger?.debug("Processing batch response", metadata: ["count": "\(responses.count)"])
+        logger.debug("Processing batch response", metadata: ["count": "\(responses.count)"])
         for response in responses {
             // Look up the pending request for this specific ID within the batch
             if let request = pendingRequests[response.id] {
@@ -625,11 +530,115 @@ public actor Client {
                 await handleResponse(response, for: request)
             } else {
                 // Log if a response ID doesn't match any pending request
-                await logger?.warning(
+                logger.warning(
                     "Received response in batch for unknown request ID",
                     metadata: ["id": "\(response.id)"]
                 )
             }
+        }
+    }
+    
+    // MARK: Data Structures
+    /// The client configuration
+    public struct Configuration: Hashable, Codable, Sendable {
+        /// The default configuration.
+        public static let `default` = Configuration(strict: false)
+        
+        /// The strict configuration.
+        public static let strict = Configuration(strict: true)
+        
+        /// When strict mode is enabled, the client:
+        /// - Requires server capabilities to be initialized before making requests
+        /// - Rejects all requests that require capabilities before initialization
+        ///
+        /// While the MCP specification requires servers to respond to initialize requests
+        /// with their capabilities, some implementations may not follow this.
+        /// Disabling strict mode allows the client to be more lenient with non-compliant
+        /// servers, though this may lead to undefined behavior.
+        public var strict: Bool
+        
+        public init(strict: Bool = false) {
+            self.strict = strict
+        }
+    }
+    
+    /// Implementation information
+    public struct Info: Hashable, Codable, Sendable {
+        /// The client name
+        public var name: String
+        /// The client version
+        public var version: String
+        
+        public init(name: String, version: String) {
+            self.name = name
+            self.version = version
+        }
+    }
+    
+    /// The client capabilities
+    public struct Capabilities: Hashable, Codable, Sendable {
+        /// The roots capabilities
+        public struct Roots: Hashable, Codable, Sendable {
+            /// Whether the list of roots has changed
+            public var listChanged: Bool?
+            
+            public init(listChanged: Bool? = nil) {
+                self.listChanged = listChanged
+            }
+        }
+        
+        /// The sampling capabilities
+        public struct Sampling: Hashable, Codable, Sendable {
+            public init() {}
+        }
+        
+        /// Whether the client supports sampling
+        public var sampling: Sampling?
+        /// Experimental features supported by the client
+        public var experimental: [String: String]?
+        /// Whether the client supports roots
+        public var roots: Capabilities.Roots?
+        
+        public init(
+            sampling: Sampling? = nil,
+            experimental: [String: String]? = nil,
+            roots: Capabilities.Roots? = nil
+        ) {
+            self.sampling = sampling
+            self.experimental = experimental
+            self.roots = roots
+        }
+    }
+    
+    /// A type-erased pending request
+    private struct AnyPendingRequest {
+        private let _resume: (Result<Any, Swift.Error>) -> Void
+        
+        init<T: Sendable & Decodable>(_ request: PendingRequest<T>) {
+            _resume = { result in
+                switch result {
+                case .success(let value):
+                    if let typedValue = value as? T {
+                        request.continuation.resume(returning: typedValue)
+                    } else if let value = value as? Value,
+                              let data = try? JSONEncoder().encode(value),
+                              let decoded = try? JSONDecoder().decode(T.self, from: data)
+                    {
+                        request.continuation.resume(returning: decoded)
+                    } else {
+                        request.continuation.resume(throwing: TypeMismatchError())
+                    }
+                case .failure(let error):
+                    request.continuation.resume(throwing: error)
+                }
+            }
+        }
+        func resume(returning value: Any) {
+            _resume(.success(value))
+        }
+        
+        func resume(throwing error: Swift.Error) {
+            _resume(.failure(error))
         }
     }
 }
