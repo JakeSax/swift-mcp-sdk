@@ -84,4 +84,22 @@ extension Data {
         let base64Data = self.base64EncodedString()
         return "data:\(mimeType ?? "text/plain");base64,\(base64Data)"
     }
+    
+    /// Attemps to format the data as nicely formatted JSON.
+    var prettyPrintedJSONString: NSString? {
+        guard let object = try? JSONSerialization.jsonObject(with: self, options: []),
+              let data = try? JSONSerialization.data(
+                withJSONObject: object,
+                options: [.prettyPrinted, .withoutEscapingSlashes]
+              ),
+              let prettyPrintedString = NSString(
+                data: data,
+                encoding: String.Encoding.utf8.rawValue
+              ) else
+        {
+            return nil
+        }
+        
+        return prettyPrintedString
+    }
 }

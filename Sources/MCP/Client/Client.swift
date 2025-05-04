@@ -187,8 +187,12 @@ public actor Client {
                 // Send the request data
                 do {
                     // Use the existing connection send
+                    logger.info("Sending request method: \(request.method) with id: \(request.id)")
+                    await connection.logger.info("Sending request here")
                     try await connection.send(requestData)
+                    logger.info("Sent request method: \(request.method) with id: \(request.id)")
                 } catch {
+                    logger.error("Error sending request method: \(request.method) with id: \(request.id): \(error)")
                     // If send fails immediately, resume continuation and remove pending request
                     continuation.resume(throwing: error)
                     self.removePendingRequest(id: request.id)  // Ensure cleanup on send error
@@ -361,16 +365,17 @@ public actor Client {
                 protocolVersion: Version.latest,
                 capabilities: capabilities,
                 clientInfo: clientInfo
-            ))
-
+            )
+        )
+        logger.info("Sending initialization request for client: \(name)...")
         let result = try await send(request)
 
         self.serverCapabilities = result.capabilities
         self.serverVersion = result.protocolVersion
         self.instructions = result.instructions
-
+        logger.info("Sending initialization notification for client: \(name)...")
         try await notify(InitializedNotification.message())
-
+        logger.info("Initialized client: \(name)!")
         return result
     }
 

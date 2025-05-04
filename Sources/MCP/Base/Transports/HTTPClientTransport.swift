@@ -52,12 +52,10 @@ public actor HTTPClientTransport: Actor, Transport {
         self.messageStream = AsyncThrowingStream { continuation = $0 }
         self.messageContinuation = continuation
 
-        self.logger =
-            logger
-            ?? Logger(
-                label: "mcp.transport.http.client",
-                factory: { _ in SwiftLogNoOpLogHandler() }
-            )
+        self.logger = logger ?? Logger(
+            label: "mcp.transport.http.client",
+            factory: { _ in SwiftLogNoOpLogHandler() }
+        )
     }
 
     /// Establishes connection with the transport
@@ -93,6 +91,7 @@ public actor HTTPClientTransport: Actor, Transport {
 
     /// Sends data through an HTTP POST request
     public func send(_ data: Data) async throws {
+        logger.info("Sending data to endpoint: \(endpoint)")
         guard isConnected else {
             throw MCPError.internalError("Transport not connected")
         }
@@ -110,7 +109,7 @@ public actor HTTPClientTransport: Actor, Transport {
         request.httpBody = data
 
         // Add session ID if available
-        if let sessionID = sessionID {
+        if let sessionID {
             request.addValue(sessionID, forHTTPHeaderField: "Mcp-Session-Id")
         }
 
@@ -153,13 +152,13 @@ public actor HTTPClientTransport: Actor, Transport {
             }
             throw MCPError.internalError("Endpoint not found")
         default:
-            throw MCPError.internalError("HTTP error: \(httpResponse.statusCode)")
+            throw MCPError.internalError("HTTP error: \(httpResponse.statusCode), Description: \(httpResponse.debugDescription), Response Data: \(responseData.prettyPrintedJSONString ?? "nil")")
         }
     }
 
     /// Receives data in an async sequence
     public func receive() -> AsyncThrowingStream<Data, Swift.Error> {
-        return messageStream
+        messageStream
     }
 
     // MARK: - SSE
@@ -202,12 +201,12 @@ public actor HTTPClientTransport: Actor, Transport {
             request.addValue("text/event-stream", forHTTPHeaderField: "Accept")
 
             // Add session ID if available
-            if let sessionID = sessionID {
+            if let sessionID {
                 request.addValue(sessionID, forHTTPHeaderField: "Mcp-Session-Id")
             }
 
             // Add Last-Event-ID header for resumability if available
-            if let lastEventID = lastEventID {
+            if let lastEventID {
                 request.addValue(lastEventID, forHTTPHeaderField: "Last-Event-ID")
             }
 
